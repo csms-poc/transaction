@@ -25,48 +25,38 @@ import com.subhrodip.voltmasters.transaction.model.ChargingRequest;
 import jakarta.validation.Valid;
 import java.util.UUID;
 import java.util.concurrent.*;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.requestreply.ReplyingKafkaTemplate;
+import org.springframework.kafka.requestreply.RequestReplyFuture;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/transaction")
 public class TransactionController {
 
-  private final KafkaTemplate<UUID, ChargingRequest> kafkaTemplate;
-  private final ConcurrentMap<UUID, CompletableFuture<AuthorizationResponse>> responseFutures =
-      new ConcurrentHashMap<>();
+  private ReplyingKafkaTemplate<UUID, ChargingRequest, AuthorizationResponse> replyingKafkaTemplate;
 
   @Autowired
-  public TransactionController(KafkaTemplate<UUID, ChargingRequest> kafkaTemplate) {
-    this.kafkaTemplate = kafkaTemplate;
+  public TransactionController(
+      ReplyingKafkaTemplate<UUID, ChargingRequest, AuthorizationResponse> replyingKafkaTemplate) {
+    this.replyingKafkaTemplate = replyingKafkaTemplate;
   }
 
   @PostMapping("/authorize")
   @CrossOrigin
   public AuthorizationResponse authorize(@RequestBody @Valid AuthorizationRequest request)
       throws InterruptedException, ExecutionException, TimeoutException {
+
     UUID key = UUID.randomUUID();
-    CompletableFuture<AuthorizationResponse> future = new CompletableFuture<>();
-    responseFutures.put(key, future);
 
-    kafkaTemplate.send(
-        KafkaTopics.CHARGE_AUTHORIZATION_INPUT_TOPIC, key, new ChargingRequest(key, request));
+    RequestReplyFuture<UUID, ChargingRequest, AuthorizationResponse> requestReplyFuture =
+        replyingKafkaTemplate.sendAndReceive(
+            new ProducerRecord<>(
+                KafkaTopics.CHARGE_AUTHORIZATION_INPUT_TOPIC,
+                key,
+                new ChargingRequest(key, request)));
 
-    return future.get(30, TimeUnit.SECONDS);
-  }
-
-  @KafkaListener(
-      topics = KafkaTopics.CHARGE_AUTHORIZATION_OUTPUT_TOPIC,
-      groupId = "csms-transaction-auth-service")
-  public void listen(ConsumerRecord<UUID, AuthorizationResponse> record) {
-    UUID key = record.key();
-    AuthorizationResponse response = record.value();
-    CompletableFuture<AuthorizationResponse> future = responseFutures.remove(key);
-    if (future != null) {
-      future.complete(response);
-    }
+    return requestReplyFuture.get(25, TimeUnit.SECONDS).value();
   }
 }

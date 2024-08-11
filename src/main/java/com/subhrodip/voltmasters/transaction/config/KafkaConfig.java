@@ -33,8 +33,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.*;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.requestreply.ReplyingKafkaTemplate;
 
 @Configuration
 @EnableKafka
@@ -53,11 +56,6 @@ public class KafkaConfig {
   }
 
   @Bean
-  public KafkaTemplate<UUID, ChargingRequest> kafkaTemplate() {
-    return new KafkaTemplate<>(producerFactory());
-  }
-
-  @Bean
   public ConsumerFactory<UUID, AuthorizationResponse> consumerFactory() {
     Map<String, Object> props = new HashMap<>();
     props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapAddress);
@@ -66,6 +64,34 @@ public class KafkaConfig {
     props.put(
         ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, AuthorizationResponseDeserializer.class);
     return new DefaultKafkaConsumerFactory<>(props);
+  }
+
+  @Bean
+  public ReplyingKafkaTemplate<UUID, ChargingRequest, AuthorizationResponse> resolver(
+      ConcurrentKafkaListenerContainerFactory<UUID, AuthorizationResponse> containerFactory) {
+
+    containerFactory.setReplyTemplate(kafkaTemplate(producerFactory()));
+    containerFactory.setConsumerFactory(consumerFactory());
+    ConcurrentMessageListenerContainer<UUID, AuthorizationResponse> container =
+        resolverContainer(containerFactory);
+    return new ReplyingKafkaTemplate<UUID, ChargingRequest, AuthorizationResponse>(
+        producerFactory(), container);
+  }
+
+  @Bean
+  public KafkaTemplate<UUID, ChargingRequest> kafkaTemplate(
+      ProducerFactory<UUID, ChargingRequest> producerFactory) {
+    return new KafkaTemplate<>(producerFactory);
+  }
+
+  @Bean
+  public ConcurrentMessageListenerContainer<UUID, AuthorizationResponse> resolverContainer(
+      ConcurrentKafkaListenerContainerFactory<UUID, AuthorizationResponse> containerFactory) {
+
+    ConcurrentMessageListenerContainer<UUID, AuthorizationResponse> container =
+        containerFactory.createContainer(KafkaTopics.CHARGE_AUTHORIZATION_OUTPUT_TOPIC);
+    container.getContainerProperties().setGroupId("csms-transaction-auth-service");
+    return container;
   }
 
   @Bean
